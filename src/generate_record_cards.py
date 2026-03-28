@@ -164,7 +164,14 @@ def format_address(row, prefix):
     # For compact display, join with commas instead of newlines
     return ', '.join(address_parts)
 
-def create_compact_record_card(participant):
+def is_trivial(val):
+    """Return True if a value is empty or a non-informative placeholder such as 'none', 'nil' or 'n/a'."""
+    if not val:
+        return True
+    return str(val).strip().lower() in ('', 'none', 'nil', 'n/a', 'na')
+
+
+def create_compact_record_card(participant, number=None):
     """Create a compact record card for one participant"""
     styles = getSampleStyleSheet()
     
@@ -190,42 +197,90 @@ def create_compact_record_card(participant):
     # Title - Participant name and section
     name = f"{participant['First Name']} {participant['Last Name']}"
     section = participant['Section']
-    title = Paragraph(f"<b>{name}</b> - {section}", title_style)
+    num_prefix = f"<b>{number}.</b> " if number is not None else ""
+
+    # Build alert badges for the title line
+    badges = []
+    has_medical = (
+        not is_trivial(participant.get('Medical details'))
+        or not is_trivial(participant.get('Allergies'))
+    )
+    has_dietary = not is_trivial(participant.get('Dietary requirements'))
+    has_additional = (
+        not is_trivial(participant.get('Additional Information: Additional Needs'))
+        or not is_trivial(participant.get('Additional Information: SEEE Expeditions Extra notes from parents'))
+    )
+    if has_medical:
+        badges.append('<font color="#cc0000"><b>[MED]</b></font>')
+    if has_dietary:
+        badges.append('<font color="#cc6600"><b>[DIET]</b></font>')
+    if has_additional:
+        badges.append('<font color="#0055cc"><b>[INFO]</b></font>')
+    badge_suffix = "  " + "  ".join(badges) if badges else ""
+
+    title = Paragraph(f"{num_prefix}<b>{name}</b> - {section}{badge_suffix}", title_style)
     elements.append(title)
     
     # Create a table for the rest of the information
     data = []
+    highlight_rows = []  # (row_index, hex_colour) — rows to be given a background colour
+
+    # Row 1: Personal details
+    personal_info = []
+    if not is_trivial(participant.get('Age Formatted')):
+        personal_info.append(f"<b>Age:</b> {participant['Age Formatted']}")
+    if personal_info:
+        data.append([Paragraph(" | ".join(personal_info), normal_style)])
     
-    # Row 1: Personal details (removed school and religion)
-    personal_info = [
-        f"<b>Age:</b> {participant['Age Formatted']}",
-        f"<b>Swimmer:</b> {participant['Swimmer']}"
-    ]
-    
-    # Filter out empty values and join with pipe symbols
-    personal_info_filtered = [p for p in personal_info if p.endswith('>') is False]
-    if personal_info_filtered:
-        personal_info_text = Paragraph(" | ".join(personal_info_filtered), normal_style)
-        data.append([personal_info_text])
-    
-    # Row 2: Medical information
+    # Row: Medical information — highlighted when any real content is present
     medical_info = []
-    if participant['Medical details']:
+    if not is_trivial(participant['Medical details']):
         medical_info.append(f"<b>Medical:</b> {participant['Medical details']}")
-    if participant['Allergies']:
+    if not is_trivial(participant['Allergies']):
         medical_info.append(f"<b>Allergies:</b> {participant['Allergies']}")
-    if participant['Dietary requirements']:
+    if not is_trivial(participant['Dietary requirements']):
         medical_info.append(f"<b>Diet:</b> {participant['Dietary requirements']}")
-    if participant['Tetanus (year of last jab)']:
+    if not is_trivial(participant['Tetanus (year of last jab)']):
         medical_info.append(f"<b>Tetanus:</b> {participant['Tetanus (year of last jab)']}")
-    if participant['Other useful information']:
+    if not is_trivial(participant['Other useful information']):
         medical_info.append(f"<b>Other:</b> {participant['Other useful information']}")
-    
+
     if medical_info:
+        highlight_rows.append((len(data), '#FFE8E8'))
         medical_info_text = Paragraph(" | ".join(medical_info), normal_style)
         data.append([medical_info_text])
-    
-    # Row 3: Primary Contact 1
+
+    # Row: Additional information — optional; from XLSX 'Additional Information' columns (BL–BM)
+    add_needs = participant.get('Additional Information: Additional Needs', '')
+    seee_notes = participant.get('Additional Information: SEEE Expeditions Extra notes from parents', '')
+    additional_info = []
+    if not is_trivial(add_needs):
+        additional_info.append(f"<b>Additional Needs:</b> {add_needs}")
+    if not is_trivial(seee_notes):
+        additional_info.append(f"<b>SEEE Notes:</b> {seee_notes}")
+    if additional_info:
+        highlight_rows.append((len(data), '#FFF8DC'))
+        data.append([Paragraph(" | ".join(additional_info), normal_style)])
+
+    # Row: Member's own contact details — optional; from XLSX 'Member' columns (AW–BE)
+    member_phone1 = participant.get('Member: Phone 1', '')
+    member_phone2 = participant.get('Member: Phone 2', '')
+    member_email1 = participant.get('Member: Email 1', '')
+    member_email2 = participant.get('Member: Email 2', '')
+    member_address = format_address(participant, 'Member:')
+    if member_phone1 or member_phone2 or member_email1 or member_email2 or member_address:
+        member_parts = ["<b>Member</b>"]
+        member_phones = ' / '.join(filter(None, [member_phone1, member_phone2]))
+        member_emails = ' / '.join(filter(None, [member_email1, member_email2]))
+        if member_phones:
+            member_parts.append(f"<b>Phone:</b> {member_phones}")
+        if member_emails:
+            member_parts.append(f"<b>Email:</b> {member_emails}")
+        if member_address:
+            member_parts.append(f"<b>Address:</b> {member_address}")
+        data.append([Paragraph(" | ".join(member_parts), normal_style)])
+
+    # Row: Primary Contact 1
     if participant['Primary Contact 1: First Name'] or participant['Primary Contact 1: Last Name']:
         primary1_name = f"{participant['Primary Contact 1: First Name']} {participant['Primary Contact 1: Last Name']}".strip()
         primary1_address = format_address(participant, 'Primary Contact 1:')
@@ -233,11 +288,20 @@ def create_compact_record_card(participant):
             participant['Primary Contact 1: Phone 1'],
             participant['Primary Contact 1: Phone 2']
         ]))
-        
-        primary1_text = Paragraph(f"<b>Primary 1:</b> {primary1_name} | <b>Phone:</b> {primary1_phone} | <b>Address:</b> {primary1_address.replace(', ', ', ')}", normal_style)
-        data.append([primary1_text])
-    
-    # Row 4: Primary Contact 2
+        primary1_email = ' / '.join(filter(None, [
+            participant.get('Primary Contact 1: Email 1', ''),
+            participant.get('Primary Contact 1: Email 2', '')
+        ]))
+        p1_parts = [f"<b>{primary1_name}</b>"]
+        if primary1_phone:
+            p1_parts.append(f"<b>Phone:</b> {primary1_phone}")
+        if primary1_email:
+            p1_parts.append(f"<b>Email:</b> {primary1_email}")
+        if primary1_address:
+            p1_parts.append(f"<b>Address:</b> {primary1_address}")
+        data.append([Paragraph(" | ".join(p1_parts), normal_style)])
+
+    # Row: Primary Contact 2
     if participant['Primary Contact 2: First Name'] or participant['Primary Contact 2: Last Name']:
         primary2_name = f"{participant['Primary Contact 2: First Name']} {participant['Primary Contact 2: Last Name']}".strip()
         primary2_address = format_address(participant, 'Primary Contact 2:')
@@ -245,11 +309,20 @@ def create_compact_record_card(participant):
             participant['Primary Contact 2: Phone 1'],
             participant['Primary Contact 2: Phone 2']
         ]))
-        
-        primary2_text = Paragraph(f"<b>Primary 2:</b> {primary2_name} | <b>Phone:</b> {primary2_phone} | <b>Address:</b> {primary2_address.replace(', ', ', ')}", normal_style)
-        data.append([primary2_text])
-    
-    # Row 5: Emergency Contact
+        primary2_email = ' / '.join(filter(None, [
+            participant.get('Primary Contact 2: Email 1', ''),
+            participant.get('Primary Contact 2: Email 2', '')
+        ]))
+        p2_parts = [f"<b>{primary2_name}</b>"]
+        if primary2_phone:
+            p2_parts.append(f"<b>Phone:</b> {primary2_phone}")
+        if primary2_email:
+            p2_parts.append(f"<b>Email:</b> {primary2_email}")
+        if primary2_address:
+            p2_parts.append(f"<b>Address:</b> {primary2_address}")
+        data.append([Paragraph(" | ".join(p2_parts), normal_style)])
+
+    # Row: Emergency Contact
     if participant['Emergency Contact: First Name'] or participant['Emergency Contact: Last Name']:
         emergency_name = f"{participant['Emergency Contact: First Name']} {participant['Emergency Contact: Last Name']}".strip()
         emergency_address = format_address(participant, 'Emergency Contact:')
@@ -257,21 +330,35 @@ def create_compact_record_card(participant):
             participant['Emergency Contact: Phone 1'],
             participant['Emergency Contact: Phone 2']
         ]))
-        
-        emergency_text = Paragraph(f"<b>Emergency:</b> {emergency_name} | <b>Phone:</b> {emergency_phone} | <b>Address:</b> {emergency_address.replace(', ', ', ')}", normal_style)
-        data.append([emergency_text])
+        emergency_email = ' / '.join(filter(None, [
+            participant.get('Emergency Contact: Email 1', ''),
+            participant.get('Emergency Contact: Email 2', '')
+        ]))
+        em_parts = [f"<b>Emergency:</b> {emergency_name}"]
+        if emergency_phone:
+            em_parts.append(f"<b>Phone:</b> {emergency_phone}")
+        if emergency_email:
+            em_parts.append(f"<b>Email:</b> {emergency_email}")
+        if emergency_address:
+            em_parts.append(f"<b>Address:</b> {emergency_address}")
+        data.append([Paragraph(" | ".join(em_parts), normal_style)])
     
-    # Create a table with the data
+    # Create a table with the data; apply conditional row highlights dynamically
     record_table = Table(data, colWidths=[17*cm])
-    record_table.setStyle(TableStyle([
+    table_style_cmds = [
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('BOX', (0, 0), (-1, -1), 0.5, colors.black),
         ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),  # Reduced padding
-        ('TOPPADDING', (0, 0), (-1, -1), 2),     # Reduced padding
-        ('LEFTPADDING', (0, 0), (-1, -1), 4),    # Reduced padding
-        ('RIGHTPADDING', (0, 0), (-1, -1), 4),   # Reduced padding
-    ]))
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+    ]
+    for row_idx, hex_color in highlight_rows:
+        table_style_cmds.append(
+            ('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor(hex_color))
+        )
+    record_table.setStyle(TableStyle(table_style_cmds))
     
     elements.append(record_table)
     elements.append(Spacer(1, 0.05*inch))  # Smaller spacer between records
@@ -332,7 +419,7 @@ def generate_pdf(data, output_file, records_per_page=8):
     youths.sort(key=lambda x: (x['Section'], x['Last Name']))
     
     # Helper function to create section content with KeepTogether
-    def process_section_participants(section, participants, current_record_count):
+    def process_section_participants(section, participants, start_number):
         section_elements = []
         
         section_header_style = ParagraphStyle(
@@ -344,24 +431,20 @@ def generate_pdf(data, output_file, records_per_page=8):
             spaceBefore=0.25*inch
         )
         
-        # Add a section header if needed
-        section_header = Paragraph(f"<b>{section}</b>", section_header_style)
-        section_elements.append(section_header)
-        
         # Process each participant individually (no chunking)
-        for participant in participants:
-            # Create participant card elements
-            participant_elements = create_compact_record_card(participant)
+        for i, participant in enumerate(participants):
+            # Create participant card elements with sequential number
+            participant_elements = create_compact_record_card(participant, number=start_number + i)
             
             # Keep each participant card together
             section_elements.append(KeepTogether(participant_elements))
         
-        # Return all section elements and count of participants
-        return section_elements, len(participants)
+        # Return all section elements and the next available number
+        return section_elements, start_number + len(participants)
     
-    # Track records on current page
-    records_on_page = 0
-    
+    # Running sequential counter across all age groups and sections
+    next_number = 1
+
     # Process youth participants first
     if youths:
         youth_header_style = ParagraphStyle(
@@ -385,14 +468,10 @@ def generate_pdf(data, output_file, records_per_page=8):
             section_groups[section].append(participant)
         
         # Process each section
-        for section_idx, (section, section_participants) in enumerate(section_groups.items()):
-            # Process this section's participants
-            section_elements, _ = process_section_participants(
-                section, 
-                section_participants, 
-                0  # No longer tracking records on page
+        for section, section_participants in section_groups.items():
+            section_elements, next_number = process_section_participants(
+                section, section_participants, next_number
             )
-            
             all_elements.extend(section_elements)
     
     # Process adult participants
@@ -421,14 +500,10 @@ def generate_pdf(data, output_file, records_per_page=8):
             section_groups[section].append(participant)
         
         # Process each section
-        for section_idx, (section, section_participants) in enumerate(section_groups.items()):
-            # Process this section's participants
-            section_elements, _ = process_section_participants(
-                section, 
-                section_participants, 
-                0  # No longer tracking records on page
+        for section, section_participants in section_groups.items():
+            section_elements, next_number = process_section_participants(
+                section, section_participants, next_number
             )
-            
             all_elements.extend(section_elements)
     
     # Build the PDF
