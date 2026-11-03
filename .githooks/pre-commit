@@ -1,0 +1,14 @@
+#!/bin/sh
+# Prevent committing with legacy email addresses
+CONFIG_EMAIL=$(git config user.email)
+AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$CONFIG_EMAIL}"
+
+case "$AUTHOR_EMAIL" in
+    davidst@hcl.com|david.strachan@mac.com)
+        echo "❌ ERROR: Commit rejected." >&2
+        echo "   Legacy email address detected: '$AUTHOR_EMAIL'" >&2
+        echo "   Please use: 'circularlizard@users.noreply.github.com'" >&2
+        echo "   Run: git config user.email circularlizard@users.noreply.github.com" >&2
+        exit 1
+        ;;
+esac
